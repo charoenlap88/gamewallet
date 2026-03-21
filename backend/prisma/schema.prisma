@@ -1,0 +1,536 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────
+// ENUMS
+// ─────────────────────────────────────────
+
+enum UserRole {
+  CUSTOMER
+  AGENT
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  INACTIVE
+}
+
+enum WalletTransactionType {
+  TOPUP
+  PURCHASE
+  REFUND
+  ADJUSTMENT
+}
+
+enum WalletTransactionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum ProductStatus {
+  ACTIVE
+  INACTIVE
+  OUT_OF_STOCK
+}
+
+enum SupplierStatus {
+  ACTIVE
+  INACTIVE
+  MAINTENANCE
+}
+
+enum ApiKeyEnvironment {
+  UAT
+  PRODUCTION
+}
+
+enum ApiKeyStatus {
+  ACTIVE
+  INACTIVE
+  EXPIRED
+}
+
+enum OrderStatus {
+  PENDING
+  PROCESSING
+  SUCCESS
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  WALLET
+  PROMPTPAY
+  OMISE
+  SLIP
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  CANCELLED
+  REFUNDED
+}
+
+/// รายการเติมเงินผ่าน Omise (รอ webhook ยืนยันก่อนเพิ่มยอด wallet)
+enum WalletTopupStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+  LOGIN
+  LOGOUT
+  RETRY
+  CANCEL
+}
+
+enum TwoFactorMethod {
+  NONE
+  TOTP
+  EMAIL
+}
+
+// ─────────────────────────────────────────
+// ADMIN NAV ROLES (จำกัดเมนูใน Admin Console)
+// ─────────────────────────────────────────
+
+model AdminNavRole {
+  id          String   @id @default(uuid())
+  slug        String   @unique
+  name        String
+  description String?
+  menuKeys    String[] @default([]) @map("menu_keys")
+  isSystem    Boolean  @default(false) @map("is_system")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  users User[]
+
+  @@map("admin_nav_roles")
+}
+
+// ─────────────────────────────────────────
+// USERS & AUTH
+// ─────────────────────────────────────────
+
+model User {
+  id        String     @id @default(uuid())
+  email     String     @unique
+  username  String     @unique
+  /** null = เข้าสู่ระบบผ่าน Google เท่านั้น (ยังไม่ตั้งรหัส) */
+  password  String?
+  googleId  String?    @unique @map("google_id")
+  fullName  String?    @map("full_name")
+  phone     String?
+  role      UserRole   @default(CUSTOMER)
+  status    UserStatus @default(ACTIVE)
+  agentId   String?    @map("agent_id")
+  agentCode String?    @unique @map("agent_code")
+  navRoleId String?    @map("nav_role_id")
+  /** 2FA: TOTP = Google Authenticator ฯลฯ, EMAIL = รหัสทางอีเมล */
+  twoFactorMethod     TwoFactorMethod @default(NONE) @map("two_factor_method")
+  totpSecret          String?         @map("totp_secret")
+  totpSecretPending   String?         @map("totp_secret_pending")
+  createdAt DateTime   @default(now()) @map("created_at")
+  updatedAt DateTime   @updatedAt @map("updated_at")
+
+  wallet             Wallet?
+  emailOtpChallenges EmailOtpChallenge[]
+  orders             Order[]
+  payments           Payment[]
+  walletTopups       WalletTopup[]
+  walletTransactions WalletTransaction[]
+  auditLogs          AuditLog[]          @relation("AuditUser")
+  affectedAuditLogs  AuditLog[]          @relation("AuditTarget")
+  navRole            AdminNavRole?       @relation(fields: [navRoleId], references: [id])
+  agent              User?               @relation("AgentCustomers", fields: [agentId], references: [id])
+  referredCustomers  User[]              @relation("AgentCustomers")
+
+  @@map("users")
+}
+
+// ─────────────────────────────────────────
+// WALLET
+// ─────────────────────────────────────────
+
+model Wallet {
+  id        String   @id @default(uuid())
+  userId    String   @unique @map("user_id")
+  balance   Decimal  @default(0) @db.Decimal(15, 2)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user         User                @relation(fields: [userId], references: [id])
+  transactions WalletTransaction[]
+
+  @@map("wallets")
+}
+
+model WalletTransaction {
+  id          String                  @id @default(uuid())
+  walletId    String                  @map("wallet_id")
+  userId      String                  @map("user_id")
+  type        WalletTransactionType
+  amount      Decimal                 @db.Decimal(15, 2)
+  balanceBefore Decimal               @map("balance_before") @db.Decimal(15, 2)
+  balanceAfter  Decimal               @map("balance_after") @db.Decimal(15, 2)
+  status      WalletTransactionStatus @default(PENDING)
+  reference   String?
+  description String?
+  metadata    Json?
+  createdAt   DateTime                @default(now()) @map("created_at")
+
+  wallet  Wallet   @relation(fields: [walletId], references: [id])
+  user    User     @relation(fields: [userId], references: [id])
+  payment Payment? @relation(fields: [reference], references: [id])
+
+  @@map("wallet_transactions")
+}
+
+model WalletTopup {
+  id             String            @id @default(uuid())
+  userId         String            @map("user_id")
+  amount         Decimal           @db.Decimal(15, 2)
+  amountSatang   Int               @map("amount_satang")
+  currency       String            @default("thb")
+  status         WalletTopupStatus @default(PENDING)
+  omiseChargeId  String?           @unique @map("omise_charge_id")
+  omiseCharge    Json?             @map("omise_charge")
+  omiseFailure   Json?             @map("omise_failure")
+  createdAt      DateTime          @default(now()) @map("created_at")
+  updatedAt      DateTime          @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("wallet_topups")
+}
+
+// ─────────────────────────────────────────
+// PRODUCTS
+// ─────────────────────────────────────────
+
+model ProductCategory {
+  id          String        @id @default(uuid())
+  name        String        @unique
+  description String?
+  imageUrl    String?       @map("image_url")
+  isActive    Boolean       @default(true) @map("is_active")
+  sortOrder   Int           @default(0) @map("sort_order")
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  products Product[]
+
+  @@map("product_categories")
+}
+
+model Product {
+  id              String        @id @default(uuid())
+  categoryId      String        @map("category_id")
+  name            String
+  description     String?
+  imageUrl        String?       @map("image_url")
+  sellingPrice    Decimal       @map("selling_price") @db.Decimal(15, 2)
+  status          ProductStatus @default(ACTIVE)
+  isFeatured      Boolean       @default(false) @map("is_featured")
+  sortOrder       Int           @default(0) @map("sort_order")
+  metadata        Json?
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  category       ProductCategory  @relation(fields: [categoryId], references: [id])
+  orderItems     OrderItem[]
+  supplierPrices SupplierProduct[]
+  promotions     ProductPromotion[]
+
+  @@map("products")
+}
+
+// ─────────────────────────────────────────
+// SUPPLIERS
+// ─────────────────────────────────────────
+
+model Supplier {
+  id              String         @id @default(uuid())
+  name            String         @unique
+  code            String         @unique
+  description     String?
+  baseUrl         String         @map("base_url")
+  status          SupplierStatus @default(ACTIVE)
+  priority        Int            @default(0)
+  timeout         Int            @default(30000)
+  maxRetries      Int            @default(3) @map("max_retries")
+  retryDelay      Int            @default(1000) @map("retry_delay")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+
+  apiKeys          SupplierApiKey[]
+  responseMappings SupplierResponseMapping[]
+  supplierProducts SupplierProduct[]
+  orderItems       OrderItem[]
+
+  @@map("suppliers")
+}
+
+model SupplierApiKey {
+  id            String            @id @default(uuid())
+  supplierId    String            @map("supplier_id")
+  keyName       String            @map("key_name")
+  keyValue      String            @map("key_value")
+  environment   ApiKeyEnvironment @default(PRODUCTION)
+  status        ApiKeyStatus      @default(ACTIVE)
+  expiresAt     DateTime?         @map("expires_at")
+  lastUpdatedBy String?           @map("last_updated_by")
+  createdAt     DateTime          @default(now()) @map("created_at")
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+
+  @@map("supplier_api_keys")
+}
+
+model SupplierResponseMapping {
+  id             String   @id @default(uuid())
+  supplierId     String   @map("supplier_id")
+  fieldName      String   @map("field_name")
+  supplierField  String   @map("supplier_field")
+  systemField    String   @map("system_field")
+  valueMapping   Json?    @map("value_mapping")
+  description    String?
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+
+  @@map("supplier_response_mappings")
+}
+
+model SupplierProduct {
+  id          String   @id @default(uuid())
+  supplierId  String   @map("supplier_id")
+  productId   String   @map("product_id")
+  supplierSku String   @map("supplier_sku")
+  costPrice   Decimal  @map("cost_price") @db.Decimal(15, 2)
+  isAvailable Boolean  @default(true) @map("is_available")
+  lastChecked DateTime @default(now()) @map("last_checked")
+  metadata    Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  supplier Supplier @relation(fields: [supplierId], references: [id])
+  product  Product  @relation(fields: [productId], references: [id])
+
+  @@unique([supplierId, productId])
+  @@map("supplier_products")
+}
+
+// ─────────────────────────────────────────
+// PROMOTIONS
+// ─────────────────────────────────────────
+
+model Promotion {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  discountPct Decimal? @map("discount_pct") @db.Decimal(5, 2)
+  discountAmt Decimal? @map("discount_amt") @db.Decimal(15, 2)
+  minAmount   Decimal? @map("min_amount") @db.Decimal(15, 2)
+  maxUses     Int?     @map("max_uses")
+  usedCount   Int      @default(0) @map("used_count")
+  isActive    Boolean  @default(true) @map("is_active")
+  startsAt    DateTime @map("starts_at")
+  endsAt      DateTime @map("ends_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  productPromotions ProductPromotion[]
+
+  @@map("promotions")
+}
+
+model ProductPromotion {
+  id          String   @id @default(uuid())
+  productId   String   @map("product_id")
+  promotionId String   @map("promotion_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  product   Product   @relation(fields: [productId], references: [id])
+  promotion Promotion @relation(fields: [promotionId], references: [id])
+
+  @@unique([productId, promotionId])
+  @@map("product_promotions")
+}
+
+// ─────────────────────────────────────────
+// ORDERS
+// ─────────────────────────────────────────
+
+model Order {
+  id              String      @id @default(uuid())
+  userId          String      @map("user_id")
+  status          OrderStatus @default(PENDING)
+  totalAmount     Decimal     @map("total_amount") @db.Decimal(15, 2)
+  discountAmount  Decimal     @default(0) @map("discount_amount") @db.Decimal(15, 2)
+  finalAmount     Decimal     @map("final_amount") @db.Decimal(15, 2)
+  paymentMethod   PaymentMethod @map("payment_method")
+  notes           String?
+  metadata        Json?
+  completedAt     DateTime?   @map("completed_at")
+  createdAt       DateTime    @default(now()) @map("created_at")
+  updatedAt       DateTime    @updatedAt @map("updated_at")
+
+  user       User        @relation(fields: [userId], references: [id])
+  items      OrderItem[]
+  payment    Payment?
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id             String      @id @default(uuid())
+  orderId        String      @map("order_id")
+  productId      String      @map("product_id")
+  supplierId     String?     @map("supplier_id")
+  quantity       Int         @default(1)
+  unitPrice      Decimal     @map("unit_price") @db.Decimal(15, 2)
+  costPrice      Decimal?    @map("cost_price") @db.Decimal(15, 2)
+  status         OrderStatus @default(PENDING)
+  supplierRef    String?     @map("supplier_ref")
+  supplierStatus String?     @map("supplier_status")
+  supplierRaw    Json?       @map("supplier_raw")
+  retryCount     Int         @default(0) @map("retry_count")
+  processedAt    DateTime?   @map("processed_at")
+  createdAt      DateTime    @default(now()) @map("created_at")
+  updatedAt      DateTime    @updatedAt @map("updated_at")
+
+  order    Order     @relation(fields: [orderId], references: [id])
+  product  Product   @relation(fields: [productId], references: [id])
+  supplier Supplier? @relation(fields: [supplierId], references: [id])
+
+  @@map("order_items")
+}
+
+// ─────────────────────────────────────────
+// PAYMENTS
+// ─────────────────────────────────────────
+
+model Payment {
+  id              String        @id @default(uuid())
+  orderId         String        @unique @map("order_id")
+  userId          String        @map("user_id")
+  method          PaymentMethod
+  amount          Decimal       @db.Decimal(15, 2)
+  status          PaymentStatus @default(PENDING)
+  gatewayRef      String?       @map("gateway_ref")
+  gatewayResponse Json?         @map("gateway_response")
+  webhookData     Json?         @map("webhook_data")
+  webhookVerified Boolean       @default(false) @map("webhook_verified")
+  slipImageUrl    String?       @map("slip_image_url")
+  paidAt          DateTime?     @map("paid_at")
+  createdAt       DateTime      @default(now()) @map("created_at")
+  updatedAt       DateTime      @updatedAt @map("updated_at")
+
+  order              Order               @relation(fields: [orderId], references: [id])
+  user               User                @relation(fields: [userId], references: [id])
+  walletTransactions WalletTransaction[]
+
+  @@map("payments")
+}
+
+// ─────────────────────────────────────────
+// AUDIT LOG
+// ─────────────────────────────────────────
+
+model AuditLog {
+  id           String      @id @default(uuid())
+  userId       String?     @map("user_id")
+  targetUserId String?     @map("target_user_id")
+  action       AuditAction
+  module       String
+  description  String
+  ipAddress    String?     @map("ip_address")
+  userAgent    String?     @map("user_agent")
+  before       Json?
+  after        Json?
+  createdAt    DateTime    @default(now()) @map("created_at")
+
+  user       User? @relation("AuditUser", fields: [userId], references: [id])
+  targetUser User? @relation("AuditTarget", fields: [targetUserId], references: [id])
+
+  @@map("audit_logs")
+}
+
+// ─────────────────────────────────────────
+// PAYMENT CHANNELS (Master Data)
+// ─────────────────────────────────────────
+
+model PaymentChannel {
+  id          String   @id @default(uuid())
+  name        String   @unique
+  code        String   @unique
+  description String?
+  isActive    Boolean  @default(true) @map("is_active")
+  sortOrder   Int      @default(0) @map("sort_order")
+  config      Json?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("payment_channels")
+}
+
+// ─────────────────────────────────────────
+// EMAIL OTP (2FA / login step)
+// ─────────────────────────────────────────
+
+model EmailOtpChallenge {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  codeHash  String   @map("code_hash")
+  expiresAt DateTime @map("expires_at")
+  consumed  Boolean  @default(false)
+  purpose   String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+  @@map("email_otp_challenges")
+}
+
+// ─────────────────────────────────────────
+// NEWS / ANNOUNCEMENTS
+// ─────────────────────────────────────────
+
+model NewsArticle {
+  id             String    @id @default(uuid())
+  title          String
+  slug           String    @unique
+  excerpt        String?
+  /** URL รูปปก (https://...) — แสดงในรายการและหน้ารายละเอียด */
+  coverImageUrl  String?   @map("cover_image_url")
+  body           String    @db.Text
+  isPublished    Boolean   @default(false) @map("is_published")
+  pinned         Boolean   @default(false)
+  publishedAt    DateTime? @map("published_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  @@map("news_articles")
+}
