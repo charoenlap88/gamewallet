@@ -1,9 +1,14 @@
 import axios, { type AxiosError, type AxiosResponse, type InternalAxiosRequestConfig } from 'axios';
 
-/** dev: ใช้ /api/v1 ผ่าน Vite proxy — production: ตั้ง VITE_API_URL */
+/**
+ * dev: ใช้ /api/v1 ผ่าน Vite proxy
+ * production: VITE_API_URL หรือ default ไปโดเมน deploy (playpaytopup)
+ */
+const DEFAULT_PROD_API = 'https://www.playpaytopup.com/api/v1';
+
 const BASE_URL =
   import.meta.env.VITE_API_URL ||
-  (import.meta.env.DEV ? '/api/v1' : 'http://localhost:3000/api/v1');
+  (import.meta.env.DEV ? '/api/v1' : DEFAULT_PROD_API);
 
 export const apiClient = axios.create({
   baseURL: BASE_URL,
